@@ -60,6 +60,7 @@ import {
 // Real Convex IDs are 32 characters. IDs may exceed this length for very long
 // table names or large numbers of documents, but this is the typical target.
 const TYPICAL_CONVEX_ID_LENGTH = 32;
+const MAX_SEARCH_CANDIDATE_REVISIONS = 1024;
 
 type FilterJson =
   | { $eq: [FilterJson, FilterJson] }
@@ -165,7 +166,7 @@ class DatabaseFake {
   private _nextQueryId: QueryId = 1;
   private _nextDocId: number = 10000;
   private _lastCreationTime: number = 0;
-  private _queryResults: Record<QueryId, Array<GenericDocument>> = {};
+  private _queryResults: Record<QueryId, Iterator<GenericDocument>> = {};
   // Pending writes for each level of transaction nesting.
   // Whenever a child mutation begins, a new level is created for all
   // components.
@@ -473,10 +474,11 @@ class DatabaseFake {
     if (results === undefined) {
       throw new Error("Bad queryId");
     }
-    if (results.length === 0) {
+    const { value, done } = results.next();
+    if (done) {
       return { value: null, done: true };
     } else {
-      return { value: results.shift()!, done: false };
+      return { value, done: false };
     }
   }
 
@@ -792,13 +794,35 @@ class DatabaseFake {
     };
   }
 
-  private _evaluateQuery(query: SerializedQuery): Array<GenericDocument> {
+  private _evaluateQuery(query: SerializedQuery): Iterator<GenericDocument> {
     const { sortedDocs, filterFn, limit } = this._resolveQuerySource(query);
-    let results = sortedDocs.filter(filterFn);
-    if (limit !== null) {
-      results = results.slice(0, limit);
-    }
-    return results;
+    // Snapshot the source above, but consume candidates lazily so take() and
+    // early exits from iteration don't scan past the search limit.
+    return (function* () {
+      let scanned = 0;
+      let returned = 0;
+      while (limit === null || returned < limit) {
+        // Like the backend, check before testing for exhaustion and before
+        // applying post-search filters. Search index equality filters have
+        // already been applied by _resolveQuerySource().
+        if (
+          query.source.type === "Search" &&
+          scanned === MAX_SEARCH_CANDIDATE_REVISIONS
+        ) {
+          throw new Error(
+            `Search query scanned too many documents (fetched ${MAX_SEARCH_CANDIDATE_REVISIONS}). ` +
+              "Consider using a smaller limit, paginating the query, or using a filter " +
+              "field to limit the number of documents pulled from the search index.",
+          );
+        }
+        if (scanned === sortedDocs.length) return;
+        const doc = sortedDocs[scanned++];
+        if (filterFn(doc)) {
+          returned++;
+          yield doc;
+        }
+      }
+    })();
   }
 
   vectorSearch(
