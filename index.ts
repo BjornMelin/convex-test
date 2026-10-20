@@ -2467,7 +2467,7 @@ function formatUnregisteredComponentError(componentPath: string): string {
     `Component "${componentPath}" is not registered on this \`convexTest\` instance. ` +
     `If it is a published component, import its test helper and call it on \`t\` ` +
     `(e.g. \`import { register } from "<component>/test"; register(t);\`). ` +
-    `Otherwise call \`t.registerComponent("${componentPath}", schema, modules)\` directly ` +
+    `Otherwise call \`t.registerComponent("${componentPath}", componentSchema, componentModules)\` directly ` +
     `(see https://github.com/get-convex/convex-test#components). ` +
     registeredHint
   );
