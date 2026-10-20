@@ -1,7 +1,45 @@
 import { expect, test } from "vitest";
 import { convexTest } from "../index";
 import { internal } from "./_generated/api";
+import type { ActionCtx } from "./_generated/server";
 import schema from "./schema";
+
+test.each(["action", "run"] as const)(
+  "store blob preserves content type via t.%s",
+  async (method) => {
+    const t = convexTest(schema);
+    const storeBlob = async (ctx: Pick<ActionCtx, "storage">) => {
+      return await ctx.storage.store(
+        new Blob(["sample"], { type: "image/png" }),
+      );
+    };
+    const storageId =
+      method === "action" ? await t.action(storeBlob) : await t.run(storeBlob);
+    const metadata = await t.query(async (ctx) => {
+      return await ctx.db.system.get("_storage", storageId);
+    });
+    expect(metadata).toMatchObject({
+      _id: storageId,
+      contentType: "image/png",
+      size: 6,
+    });
+  },
+);
+
+test.each([undefined, ""])(
+  "store blob omits content type when Blob type is %s",
+  async (type) => {
+    const t = convexTest(schema);
+    const storageId = await t.action(async (ctx) => {
+      return await ctx.storage.store(new Blob(["sample"], { type }));
+    });
+    const metadata = await t.query(async (ctx) => {
+      return await ctx.db.system.get("_storage", storageId);
+    });
+    expect(metadata).toMatchObject({ _id: storageId, size: 6 });
+    expect(metadata).not.toHaveProperty("contentType");
+  },
+);
 
 test("action store blob", async () => {
   const t = convexTest(schema);
