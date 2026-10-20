@@ -1118,7 +1118,7 @@ function evaluateQueryValue(value: JSONValue) {
 }
 
 function checkSearchCandidateLimit(source: Source, scanned: number) {
-  if (source.type === "Search" && scanned === MAX_SEARCH_CANDIDATE_REVISIONS) {
+  if (source.type === "Search" && scanned >= MAX_SEARCH_CANDIDATE_REVISIONS) {
     throw new Error(
       `Search query scanned too many documents (fetched ${MAX_SEARCH_CANDIDATE_REVISIONS}). ` +
         "Consider using a smaller limit, paginating the query, or using a filter " +
