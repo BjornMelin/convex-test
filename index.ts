@@ -555,6 +555,7 @@ class DatabaseFake {
     let pageStatus: "SplitRecommended" | "SplitRequired" | null = null;
     let rowsRead = 0;
     let bytesRead = 0;
+    let stoppedAtLimit = false;
     const readDocCursors: string[] = [];
 
     for (let i = 0; i < sortedDocs.length; i++) {
@@ -576,6 +577,8 @@ class DatabaseFake {
           }
         }
       }
+
+      checkSearchCandidateLimit(query.source, rowsRead);
 
       // endCursor: stop when we reach or pass this position (inclusive boundary)
       if (hasEndBoundary && endCursorKeys) {
@@ -620,10 +623,12 @@ class DatabaseFake {
       if (hitLimit) {
         pageStatus = "SplitRequired";
         continueCursor = this._encodeCursor(doc, cursorFields);
+        stoppedAtLimit = true;
         break;
       }
 
       if (!endCursor && page.length >= pageSize) {
+        stoppedAtLimit = true;
         if (isLastDoc) {
           // No more docs — don't set continueCursor so isDone becomes true
         } else {
@@ -631,6 +636,12 @@ class DatabaseFake {
         }
         break;
       }
+    }
+
+    // Exhausting the source (including an endCursor-bounded range) requires
+    // another read. Like streaming queries, check the cap before exhaustion.
+    if (!stoppedAtLimit) {
+      checkSearchCandidateLimit(query.source, rowsRead);
     }
 
     if (continueCursor === "_end_cursor") {
@@ -805,16 +816,7 @@ class DatabaseFake {
         // Like the backend, check before testing for exhaustion and before
         // applying post-search filters. Search index equality filters have
         // already been applied by _resolveQuerySource().
-        if (
-          query.source.type === "Search" &&
-          scanned === MAX_SEARCH_CANDIDATE_REVISIONS
-        ) {
-          throw new Error(
-            `Search query scanned too many documents (fetched ${MAX_SEARCH_CANDIDATE_REVISIONS}). ` +
-              "Consider using a smaller limit, paginating the query, or using a filter " +
-              "field to limit the number of documents pulled from the search index.",
-          );
-        }
+        checkSearchCandidateLimit(query.source, scanned);
         if (scanned === sortedDocs.length) return;
         const doc = sortedDocs[scanned++];
         if (filterFn(doc)) {
@@ -1113,6 +1115,16 @@ function evaluateQueryValue(value: JSONValue) {
   return evaluatedValue === undefined
     ? undefined
     : resolvePendingValues(evaluatedValue);
+}
+
+function checkSearchCandidateLimit(source: Source, scanned: number) {
+  if (source.type === "Search" && scanned === MAX_SEARCH_CANDIDATE_REVISIONS) {
+    throw new Error(
+      `Search query scanned too many documents (fetched ${MAX_SEARCH_CANDIDATE_REVISIONS}). ` +
+        "Consider using a smaller limit, paginating the query, or using a filter " +
+        "field to limit the number of documents pulled from the search index.",
+    );
+  }
 }
 
 function evaluateSearchFilter(
