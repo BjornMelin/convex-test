@@ -1,12 +1,21 @@
 # Changelog
 
-## Unreleased
+## 0.0.63
 
 - Pin `Date.now()`, `Date()`, and `new Date()` for each query or mutation,
   including nested calls and `t.run`. Like the Convex backend, the pinned time
   is at or after the transaction's snapshot timestamp and at or before the
   `_creationTime` of documents the transaction inserts. Scheduled functions
   still become due according to the wall clock, as in the real Convex backend.
+  (#144)
+- Enforce the 1,024-candidate limit for text search during iteration and
+  pagination, including candidates excluded by post-search filters. Queries
+  can stop early with `.take()`, smaller pages, or an early exit from iteration
+  to stay within the limit. (#169, #171)
+- Fail early when calling, scheduling, or creating a function handle for an
+  unregistered component, with an error that explains how to register it and
+  lists the registered components. (#164)
+- Preserve a stored Blob's content type in `_storage` metadata. (#170)
 
 ## 0.0.62
 
