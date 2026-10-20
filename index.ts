@@ -1996,6 +1996,7 @@ function jsSyscallImpl() {
           return db.insert("_storage", {
             size: blob.size,
             sha256: await blobSha(blob),
+            ...(blob.type ? { contentType: blob.type } : {}),
           });
         });
         db.storeFile(storageId, blob);
