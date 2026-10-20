@@ -2468,7 +2468,7 @@ function formatUnregisteredComponentError(componentPath: string): string {
     `If it is a published component, import its test helper and call it on \`t\` ` +
     `(e.g. \`import { register } from "<component>/test"; register(t);\`). ` +
     `Otherwise call \`t.registerComponent("${componentPath}", componentSchema, componentModules)\` directly ` +
-    `(see https://github.com/get-convex/convex-test#components). ` +
+    `(see https://docs.convex.dev/components/using#testing-components). ` +
     registeredHint
   );
 }

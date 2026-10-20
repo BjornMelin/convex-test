@@ -102,3 +102,12 @@ test("error message points at the component's `/test` register helper", async ()
     t.query(components.counter.public.count, { name: "beans" }),
   ).rejects.toThrow(/register\(t\)/);
 });
+
+test("error message says when no components are registered", async () => {
+  const t = convexTest(schema);
+  await expect(
+    t.query(components.counter.public.count, { name: "beans" }),
+  ).rejects.toThrow(
+    /No components have been registered on this `convexTest` instance/,
+  );
+});
