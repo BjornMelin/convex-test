@@ -1660,24 +1660,13 @@ function asyncSyscallImpl() {
           maximumRowsRead,
           maximumBytesRead,
         } = args;
-        // Like in a deployed backend, components can't use `.paginate()`.
-        if (getCurrentComponentPath() !== "") {
-          throw new Error(
-            "paginate() is only supported in the app. Learn more at https://docs.convex.dev/components/authoring#pagination",
-          );
-        }
-        // Convex only allows a single paginated query (`.paginate()`) per
-        // function execution. Multiple `.paginate()` calls pass in the test
-        // mock but fail at runtime in a deployed function, so always enforce
-        // the rule.
-        const ctx = executionContextStorage.getStore();
-        if (ctx) {
-          ctx.paginatedQueries += 1;
-          if (ctx.paginatedQueries > 1) {
+        const pagination = executionContextStorage.getStore()?.pagination;
+        if (pagination) {
+          pagination.calls += 1;
+          if (pagination.calls > 1) {
             throw new Error(
               "Only a single paginated query (`.paginate()`) is allowed per " +
-                "function execution. Calling `.paginate()` more than once in a " +
-                "single Convex function fails at runtime in a deployed backend. " +
+                "query, including nested query calls and component calls. " +
                 "This is a Convex limit: https://docs.convex.dev/database/pagination",
             );
           }
@@ -2605,9 +2594,9 @@ type ExecutionContext = {
   udfPath: string;
   udfType: UdfType;
   depth: number; // 0 = top-level, 1+ = nested
-  // Number of paginated queries (`.paginate()`) executed so far in this
-  // function execution. Convex only allows one per function invocation.
-  paginatedQueries: number;
+  // Queries share this counter with their nested queries, including components.
+  // Mutations have no counter; each query they call gets a fresh one.
+  pagination?: { calls: number };
 };
 
 const executionContextStorage = new AsyncLocalStorage<ExecutionContext>();
@@ -3119,9 +3108,9 @@ export function convexTest<Schema extends GenericSchema>(
  *     - `true` or `{}`: enforce default Convex limits
  *     - `{ bytesRead: 1024 }`: override specific limits
  *
- * Regardless of `transactionLimits`, a single function execution may only run
- * one paginated query (`.paginate()`); calling it more than once throws,
- * matching the behavior of a deployed Convex backend.
+ * Regardless of `transactionLimits`, a query may only call `.paginate()` once,
+ * including nested query calls and component calls. Mutations may paginate
+ * multiple times and call multiple queries that each paginate once.
  *
  * @returns an object which is by convention stored in the `t` variable
  *   and which provides methods for exercising your Convex functions.
@@ -3324,7 +3313,6 @@ function withAuth(
       udfPath: functionPath.udfPath,
       udfType: "mutation",
       depth: (parentCtx?.depth ?? 0) + 1,
-      paginatedQueries: 0,
     };
     const requestMetadata = requestMetadataForExecution();
 
@@ -3385,7 +3373,7 @@ function withAuth(
       udfPath: functionPath.udfPath,
       udfType: "query",
       depth: (parentCtx?.depth ?? 0) + 1,
-      paginatedQueries: 0,
+      pagination: (isNested && parentCtx?.pagination) || { calls: 0 },
     };
     const requestMetadata = requestMetadataForExecution();
 
@@ -3449,7 +3437,6 @@ function withAuth(
       udfPath: functionPath.udfPath,
       udfType: "action",
       depth: (parentCtx?.depth ?? 0) + 1,
-      paginatedQueries: 0,
     };
     const requestMetadata = requestMetadataForExecution();
     return await executionContextStorage.run(childCtx, async () => {
@@ -3799,7 +3786,6 @@ function withAuth(
         udfPath: "http",
         udfType: "http",
         depth: 0,
-        paginatedQueries: 0,
       };
       // The request's headers are not inspected: like the identity, the IP and
       // the user agent are configured on the test accessor.
