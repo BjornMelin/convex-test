@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.64
+
+- Update pagination restriction to match backend: components can now call
+  `.paginate` and mutations can paginate multiple times.
+
 ## 0.0.63
 
 - Pin `Date.now()`, `Date()`, and `new Date()` for each query or mutation,
