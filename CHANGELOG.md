@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.65
+
+- Adds support for Convex mutations that call the `ctx.auth.signJwt` API.
+
 ## 0.0.64
 
 - Update pagination restriction to match backend: components can now call
