@@ -1509,7 +1509,10 @@ const JWT_CLAIM_BY_IDENTITY_ATTRIBUTE: Record<string, string> = {
 };
 
 function base64UrlEncode(value: string) {
-  const bytes = new TextEncoder().encode(value);
+  return base64UrlEncodeBytes(new TextEncoder().encode(value));
+}
+
+function base64UrlEncodeBytes(bytes: Uint8Array) {
   let binary = "";
   for (const byte of bytes) {
     binary += String.fromCharCode(byte);
@@ -1541,6 +1544,159 @@ function createTestJwt(identity: Record<string, any>) {
   const header = base64UrlEncode(JSON.stringify({ alg: "none", typ: "JWT" }));
   const payload = base64UrlEncode(JSON.stringify(claims));
   return `${header}.${payload}.`;
+}
+
+// Limits the backend puts on tokens from `ctx.auth.signJwt`.
+const DEPLOYMENT_JWT_MAX_LIFETIME_SECONDS = 60 * 60;
+const DEPLOYMENT_JWT_MAX_SIZE = 8000;
+const RESERVED_JWT_CLAIM_PREFIXES = ["convex", "cvx"];
+// Used as the `iss` origin when the test environment doesn't set
+// `CONVEX_CLOUD_URL`, which the backend always does.
+const DEFAULT_CONVEX_CLOUD_URL = "https://some-deployment.convex.cloud";
+
+// `ctx.auth` in mutations, which can also sign JWTs with the deployment's key.
+function mutationAuth(auth: AuthFake) {
+  return {
+    getUserIdentity: () => auth.getUserIdentity(),
+    signJwt: (options: any) => signDeploymentJwt(options),
+  };
+}
+
+// Mirrors the backend's `ctx.auth.signJwt`, including its validation. Tokens
+// are signed with a key generated for the `convexTest` instance rather than
+// the deployment's key.
+async function signDeploymentJwt(options: any): Promise<string> {
+  // On the backend the options cross the syscall boundary as JSON.
+  const { claims = {}, expiresInSeconds } = JSON.parse(
+    JSON.stringify(options ?? {}),
+  );
+  if (typeof claims !== "object" || claims === null || Array.isArray(claims)) {
+    throw new Error(
+      "Invalid arguments for auth.signJwt: claims must be an object",
+    );
+  }
+  if (typeof expiresInSeconds !== "number" || expiresInSeconds < 1) {
+    throw new Error(
+      "Invalid arguments for auth.signJwt: expiresInSeconds must be a number of seconds, at least 1",
+    );
+  }
+  for (const reserved of ["iss", "iat", "exp"]) {
+    if (Object.hasOwn(claims, reserved)) {
+      throw new Error(
+        `The '${reserved}' claim is set by Convex and can't be provided`,
+      );
+    }
+  }
+  const reservedPrefixClaim = Object.keys(claims).find((name) =>
+    RESERVED_JWT_CLAIM_PREFIXES.some(
+      (prefix) =>
+        name.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase(),
+    ),
+  );
+  if (reservedPrefixClaim !== undefined) {
+    throw new Error(
+      `The '${reservedPrefixClaim}' claim can't be provided: claim names ` +
+        `starting with 'convex' or 'cvx' are reserved`,
+    );
+  }
+  if (
+    Object.hasOwn(claims, "sub") &&
+    (typeof claims.sub !== "string" || claims.sub === "")
+  ) {
+    throw new Error("The 'sub' claim must be a non-empty string");
+  }
+  if (Object.hasOwn(claims, "nbf")) {
+    throw new Error(
+      "The 'nbf' claim is reserved by Convex and can't be provided",
+    );
+  }
+  // The backend truncates the lifetime to whole seconds.
+  const expiresIn = Math.floor(expiresInSeconds);
+  if (expiresIn > DEPLOYMENT_JWT_MAX_LIFETIME_SECONDS) {
+    throw new Error(
+      `expiresIn must be between 1 second and ${DEPLOYMENT_JWT_MAX_LIFETIME_SECONDS} seconds`,
+    );
+  }
+
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const payload = {
+    ...claims,
+    iss: deploymentJwtIssuer(getCurrentComponentPath()),
+    iat: issuedAt,
+    exp: issuedAt + expiresIn,
+  };
+  const { privateKey, kid } = await getDeploymentJwtKey();
+  const header = { alg: "ES256", typ: "JWT", kid };
+  const signingInput =
+    base64UrlEncode(JSON.stringify(header)) +
+    "." +
+    base64UrlEncode(JSON.stringify(payload));
+  const signature = await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    privateKey,
+    new TextEncoder().encode(signingInput),
+  );
+  const token = `${signingInput}.${base64UrlEncodeBytes(new Uint8Array(signature))}`;
+  if (token.length > DEPLOYMENT_JWT_MAX_SIZE) {
+    throw new Error(
+      `The token is ${token.length} bytes, over the ${DEPLOYMENT_JWT_MAX_SIZE} byte limit`,
+    );
+  }
+  return token;
+}
+
+// The app signs under the deployment's origin and a component under
+// `{origin}/components/{path}`.
+function deploymentJwtIssuer(componentPath: string) {
+  const origin = (
+    (typeof process !== "undefined" && process.env.CONVEX_CLOUD_URL) ||
+    DEFAULT_CONVEX_CLOUD_URL
+  ).replace(/\/+$/, "");
+  return componentPath === ROOT_COMPONENT_PATH
+    ? origin
+    : `${origin}/components/${componentPath}`;
+}
+
+function getDeploymentJwtKey() {
+  const convex = getConvexGlobal();
+  convex.deploymentJwtKey ??= generateDeploymentJwtKey();
+  return convex.deploymentJwtKey;
+}
+
+async function generateDeploymentJwtKey(): Promise<DeploymentJwtKey> {
+  const { privateKey, publicKey } = await crypto.subtle.generateKey(
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign", "verify"],
+  );
+  const { x, y } = await crypto.subtle.exportKey("jwk", publicKey);
+  // Like the backend, use the key's RFC 7638 thumbprint as its `kid`.
+  const thumbprint = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(
+      JSON.stringify({ crv: "P-256", kty: "EC", x: x!, y: y! }),
+    ),
+  );
+  const kid = base64UrlEncodeBytes(new Uint8Array(thumbprint));
+  return {
+    privateKey,
+    kid,
+    publicJwk: {
+      kty: "EC",
+      crv: "P-256",
+      x: x!,
+      y: y!,
+      kid,
+      alg: "ES256",
+      use: "sig",
+    },
+  };
+}
+
+// What the backend serves at `${CONVEX_CLOUD_URL}/.well-known/jwks.json`.
+async function deploymentJwks(): Promise<DeploymentJwks> {
+  const { publicJwk } = await getDeploymentJwtKey();
+  return { keys: [{ ...publicJwk }] };
 }
 
 // Runs a function that was scheduled, moving its `_scheduled_functions`
@@ -2447,6 +2603,39 @@ export type TestConvexForDataModel<DataModel extends GenericDataModel> = {
   withRequestMetadata(
     metadata: Partial<Pick<RequestMetadata, "ip" | "userAgent">>,
   ): TestConvexForDataModel<DataModel>;
+
+  /**
+   * The public keys that verify tokens signed by `ctx.auth.signJwt`, like the
+   * JWKS the backend serves at `${CONVEX_CLOUD_URL}/.well-known/jwks.json`.
+   *
+   * Each `convexTest` instance signs with its own key, so the JWKS only
+   * verifies tokens signed by the same instance.
+   *
+   * ```ts
+   * import { createLocalJWKSet, jwtVerify } from "jose";
+   *
+   * const { payload } = await jwtVerify(token, createLocalJWKSet(await t.jwks()));
+   * ```
+   */
+  jwks(): Promise<DeploymentJwks>;
+};
+
+/**
+ * A JSON Web Key Set, as returned by {@link TestConvexForDataModel.jwks}.
+ */
+export type DeploymentJwks = { keys: DeploymentJwk[] };
+
+/**
+ * A public key that verifies tokens signed by `ctx.auth.signJwt`.
+ */
+export type DeploymentJwk = {
+  kty: "EC";
+  crv: "P-256";
+  x: string;
+  y: string;
+  kid: string;
+  alg: "ES256";
+  use: "sig";
 };
 
 /**
@@ -2637,6 +2826,14 @@ type ConvexGlobal = {
   syscall: (op: string, args: any) => any;
   asyncSyscall: (op: string, args: any) => Promise<any>;
   jsSyscall: (op: string, args: any) => Promise<any>;
+  // Generated on the first `ctx.auth.signJwt` call.
+  deploymentJwtKey: Promise<DeploymentJwtKey> | null;
+};
+
+type DeploymentJwtKey = {
+  privateKey: CryptoKey;
+  kid: string;
+  publicJwk: DeploymentJwk;
 };
 
 function getConvexGlobal(): ConvexGlobal {
@@ -3184,6 +3381,7 @@ function createConvexTest<SchemaDef extends SchemaDefinition<any, boolean>>(
     syscall: syscallImpl(),
     asyncSyscall: asyncSyscallImpl(),
     jsSyscall: jsSyscallImpl(),
+    deploymentJwtKey: null,
   };
   ensureGlobalProxy();
 
@@ -3220,6 +3418,7 @@ function createConvexTest<SchemaDef extends SchemaDefinition<any, boolean>>(
   function testAccessor(auth: AuthFake, requestOptions: RequestOptions): any {
     return {
       ...wrapInContext(withAuth(auth, requestOptions)),
+      jwks: () => convexGlobalStorage.run(convexGlobal, deploymentJwks),
       withIdentity(identity: Partial<UserIdentity>) {
         const subject =
           identity.subject ?? "" + simpleHash(JSON.stringify(identity));
@@ -3295,7 +3494,7 @@ function withAuth(
       handler: (ctx: any, a: any) => {
         const testCtx = {
           ...ctx,
-          auth: authStorage.getStore() ?? auth,
+          auth: mutationAuth(authStorage.getStore() ?? auth),
           ...extraCtx,
         };
         return runWithGlobalOverrides(transactionGlobalOverrides(), () =>
