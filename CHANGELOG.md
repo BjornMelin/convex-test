@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.66
+
+- perf: only visit the queried table's documents in \_iterateDocs (#154)
+
 ## 0.0.65
 
 - Adds support for Convex mutations that call the `ctx.auth.signJwt` API.
