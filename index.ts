@@ -795,9 +795,10 @@ class DatabaseFake {
 
     const orderMultiplier = order === "asc" ? 1 : -1;
     // Read each document's sort key once rather than on every comparison.
+    const sortPathParts = fieldPathsToSortBy.map((fp) => fp.split("."));
     const keyed = results.map((doc) => ({
       doc,
-      key: fieldPathsToSortBy.map((fp) => evaluateFieldPath(fp, doc)),
+      key: sortPathParts.map((parts) => evaluateFieldPathParts(parts, doc)),
     }));
     keyed.sort((a, b) => {
       for (let i = 0; i < a.key.length; i++) {
@@ -996,14 +997,11 @@ function substituteCommitTs<T extends Value>(value: T, commitTs: bigint): T {
   ) as T;
 }
 
-const fieldPathParts = new Map<string, string[]>();
-
 function evaluateFieldPath(fieldPath: string, document: any) {
-  let pathParts = fieldPathParts.get(fieldPath);
-  if (pathParts === undefined) {
-    pathParts = fieldPath.split(".");
-    fieldPathParts.set(fieldPath, pathParts);
-  }
+  return evaluateFieldPathParts(fieldPath.split("."), document);
+}
+
+function evaluateFieldPathParts(pathParts: string[], document: any) {
   let result: Value | undefined = document;
   for (const p of pathParts) {
     result =
