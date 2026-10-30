@@ -793,17 +793,24 @@ class DatabaseFake {
         (operator): operator is { limit: number } => "limit" in operator,
       )[0] ?? null;
 
-    results.sort((a, b) => {
-      const orderMultiplier = order === "asc" ? 1 : -1;
-      let v = 0;
-      for (const fp of fieldPathsToSortBy) {
-        v = compareValues(evaluateFieldPath(fp, a), evaluateFieldPath(fp, b));
+    const orderMultiplier = order === "asc" ? 1 : -1;
+    // Read each document's sort key once rather than on every comparison.
+    const keyed = results.map((doc) => ({
+      doc,
+      key: fieldPathsToSortBy.map((fp) => evaluateFieldPath(fp, doc)),
+    }));
+    keyed.sort((a, b) => {
+      for (let i = 0; i < a.key.length; i++) {
+        const v = compareValues(a.key[i], b.key[i]);
         if (v !== 0) {
           return v * orderMultiplier;
         }
       }
-      return v * orderMultiplier;
+      return 0;
     });
+    for (let i = 0; i < keyed.length; i++) {
+      results[i] = keyed[i].doc;
+    }
 
     const filterFn = (doc: GenericDocument) =>
       filters.every((f) => evaluateFilter(doc, f));
@@ -989,8 +996,14 @@ function substituteCommitTs<T extends Value>(value: T, commitTs: bigint): T {
   ) as T;
 }
 
+const fieldPathParts = new Map<string, string[]>();
+
 function evaluateFieldPath(fieldPath: string, document: any) {
-  const pathParts = fieldPath.split(".");
+  let pathParts = fieldPathParts.get(fieldPath);
+  if (pathParts === undefined) {
+    pathParts = fieldPath.split(".");
+    fieldPathParts.set(fieldPath, pathParts);
+  }
   let result: Value | undefined = document;
   for (const p of pathParts) {
     result =
